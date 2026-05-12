@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { createClient } from "redis";
 import { env } from "./utils/env.js";
+import { BALANCES } from "./store/exchange-store.js";
 
 export type EngineCommandType =
   | "create_order"
@@ -51,6 +52,7 @@ async function sendResponse(responseQueue: string, response: EngineResponse): Pr
 }
 
 function handleEngineRequest(message: EngineRequest): unknown {
+
   /**
    * TODO(student):
    * 1. Check _message.type.
@@ -65,6 +67,29 @@ function handleEngineRequest(message: EngineRequest): unknown {
    * - get_order
    * - cancel_order
    */
+
+  if (message.type === "get_user_balance") {
+    try {
+      const userId: string = message.payload.userId as string;
+
+      if (!BALANCES.has(userId)) {
+        BALANCES.set(userId, {
+          USD: {
+            available: 10000,
+            locked: 0
+          },
+          BTC: {
+            available: 5,
+            locked: 0
+          }
+        });
+      }
+
+      return BALANCES.get(userId);
+    } catch (error) {
+      throw new Error("Failed to get user balance: " + (error instanceof Error ? error.message : String(error)));
+    }
+  }
 
   // just checking the flow, remove this when you start implementing the logic
   if (message.type === "create_order") {
