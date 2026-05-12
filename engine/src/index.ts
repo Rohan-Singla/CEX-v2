@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { createClient } from "redis";
 import { env } from "./utils/env.js";
-import { BALANCES } from "./store/exchange-store.js";
+import { BALANCES, ORDERS, type CreateOrderInput, type OrderRecord } from "./store/exchange-store.js";
 
 export type EngineCommandType =
   | "create_order"
@@ -93,31 +93,106 @@ function handleEngineRequest(message: EngineRequest): unknown {
 
   // just checking the flow, remove this when you start implementing the logic
   if (message.type === "create_order") {
-    return {
-      orderId: crypto.randomUUID(),
-      status: "filled",
-      filledQty: DUMMY_SELL_ORDER.qty,
-      averagePrice: DUMMY_SELL_ORDER.price,
-      fills: [
-        {
-          fillId: crypto.randomUUID(),
-          symbol: DUMMY_SELL_ORDER.symbol,
-          price: DUMMY_SELL_ORDER.price,
-          qty: DUMMY_SELL_ORDER.qty,
-          buyOrderId: "request-buy-order",
-          sellOrderId: DUMMY_SELL_ORDER.orderId,
-        },
-      ],
-      note: "Smoke-test response only. Students must replace this with real matching logic.",
-    };
+
+      const order: CreateOrderInput = message.payload as unknown as CreateOrderInput;
+
+    console.log("create order");
+      console.log(order)
+      if (order.qty <= 0) {
+        throw new Error("Quantity must be positive");
+      }
+
+      if (order.type === "limit") {
+        if (order.price === null || order.price <= 0) {
+          throw new Error("Limit orders require valid price");
+        }
+      }
+
+      if (order.type === "market") {
+        order.price = null;
+      }
+
+
+      const newOrder = {
+        orderId: crypto.randomUUID(),
+
+        userId: order.userId,
+
+        type: order.type,
+        side: order.side,
+        symbol: order.symbol,
+
+        price: order.price,
+        qty: order.qty,
+
+        filledQty: 0,
+
+        status: "open",
+
+        fills:[],
+
+        createdAt: Date.now(),
+     };
+
+     ORDERS.set(newOrder.orderId, newOrder as OrderRecord);
+
+     return newOrder;
+
+    // return {
+    //   orderId: crypto.randomUUID(),
+    //   status: "filled",
+    //   filledQty: DUMMY_SELL_ORDER.qty,
+    //   averagePrice: DUMMY_SELL_ORDER.price,
+    //   fills: [
+    //     {
+    //       fillId: crypto.randomUUID(),
+    //       symbol: DUMMY_SELL_ORDER.symbol,
+    //       price: DUMMY_SELL_ORDER.price,
+    //       qty: DUMMY_SELL_ORDER.qty,
+    //       buyOrderId: "request-buy-order",
+    //       sellOrderId: DUMMY_SELL_ORDER.orderId,
+    //     },
+    //   ],
+    //   note: "Smoke-test response only. Students must replace this with real matching logic.",
+    // };
   }
 
-  throw new Error("TODO(student): implement this engine request type");
+  
+  // if(message.type === "get_order"){
+  //     const order = ORDERS.get(message.payload.orderId as string);
+
+  //     if(!order){
+  //       throw new Error("Order not found ");
+  //     }
+
+  //     return order;
+  // }
+
+  if (message.type === "get_order") {
+
+    const { orderId } = message.payload as {
+       orderId: string;
+    };
+
+    console.log(orderId)
+ 
+    const order = ORDERS.get(orderId);
+ 
+    if (!order) {
+       throw new Error("Order not found");
+    }
+ 
+    return order;
+ }
+
+  // throw new Error("TODO(student): implement this engine request type");
+
 }
+
 
 console.log(`Engine listening on Redis queue: ${env.incomingQueue}`);
 
-for (;;) {
+for (; ;) {
   const item = await brokerClient.brPop(env.incomingQueue, 0);
   if (!item) continue;
 
