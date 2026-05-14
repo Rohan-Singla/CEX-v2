@@ -1,14 +1,21 @@
 import "dotenv/config";
 import { createClient } from "redis";
 import { env } from "./utils/env.js";
-import { BALANCES, ORDERS, type CreateOrderInput, type OrderRecord } from "./store/exchange-store.js";
+
+import {
+  BALANCES,
+  ORDERBOOKS,
+  ORDERS,
+  type CreateOrderInput,
+  type OrderRecord,
+} from "./store/exchange-store.js";
 
 export type EngineCommandType =
   | "create_order"
-  | "get_depth"
   | "get_user_balance"
   | "get_order"
-  | "cancel_order";
+  | "cancel_order"
+  | "get_depth";
 
 export interface EngineRequest {
   correlationId: string;
@@ -24,199 +31,285 @@ export interface EngineResponse {
   error?: string;
 }
 
-const brokerClient = createClient({ url: env.redisUrl }).on("error", (error) => {
+const brokerClient = createClient({
+  url: env.redisUrl,
+}).on("error", (error) => {
   console.error("Redis broker client error", error);
 });
 
-const responseClient = createClient({ url: env.redisUrl }).on("error", (error) => {
+const responseClient = createClient({
+  url: env.redisUrl,
+}).on("error", (error) => {
   console.error("Redis response client error", error);
 });
 
-await Promise.all([brokerClient.connect(), responseClient.connect()]);
+await Promise.all([
+  brokerClient.connect(),
+  responseClient.connect(),
+]);
 
-// :-)) I added this just to check the flow, remove it when you start
-const DUMMY_SELL_ORDER = {
-  orderId: "dummy-sell-order-1",
-  userId: "dummy-seller",
-  type: "limit",
-  side: "sell",
-  symbol: "BTC",
-  price: 100,
-  qty: 1,
-  filledQty: 0,
-  status: "open",
-};
+async function sendResponse(
+  responseQueue: string,
+  response: EngineResponse
+): Promise<void> {
 
-async function sendResponse(responseQueue: string, response: EngineResponse): Promise<void> {
-  await responseClient.lPush(responseQueue, JSON.stringify(response));
+  await responseClient.lPush(
+    responseQueue,
+    JSON.stringify(response)
+  );
 }
 
-function handleEngineRequest(message: EngineRequest): unknown {
+function seedBalance(userId: string): void {
 
-  /**
-   * TODO(student):
-   * 1. Check _message.type.
-   * 2. Read _message.payload.
-   * 3. Call your order book / balance / order logic.
-   * 4. Return the data that should go back to the backend.
-   *
-   * Required message types:
-   * - create_order
-   * - get_depth
-   * - get_user_balance
-   * - get_order
-   * - cancel_order
-   */
+  const existingBalance =
+    BALANCES.get(userId);
 
-  if (message.type === "get_user_balance") {
-    try {
-      const userId: string = message.payload.userId as string;
+  if (existingBalance) {
+    return;
+  }
 
-      if (!BALANCES.has(userId)) {
-        BALANCES.set(userId, {
-          USD: {
-            available: 10000,
-            locked: 0
-          },
-          BTC: {
-            available: 5,
-            locked: 0
-          }
-        });
-      }
+  BALANCES.set(userId, {
+    USD: {
+      available: 10000,
+      locked: 0,
+    },
 
-      return BALANCES.get(userId);
-    } catch (error) {
-      throw new Error("Failed to get user balance: " + (error instanceof Error ? error.message : String(error)));
+    BTC: {
+      available: 5,
+      locked: 0,
+    },
+  });
+}
+
+function createOrder(
+  input: CreateOrderInput
+): OrderRecord {
+
+  seedBalance(input.userId);
+
+  const order: OrderRecord = {
+    orderId: crypto.randomUUID(),
+
+    userId: input.userId,
+
+    type: input.type,
+
+    side: input.side,
+
+    symbol: input.symbol,
+
+    price: input.price,
+
+    qty: input.qty,
+
+    filledQty: 0,
+
+    status: "open",
+
+    fills: [],
+
+    createdAt: Date.now(),
+  };
+
+  ORDERS.set(order.orderId, order);
+
+
+  return order;
+}
+
+function cancelOrder(
+  orderId: string
+): OrderRecord {
+
+  const order = ORDERS.get(orderId);
+
+  if (!order) {
+    throw new Error("Order not found");
+  }
+
+  if (order.status === "cancelled") {
+    throw new Error("Order already cancelled");
+  }
+
+  order.status = "cancelled";
+
+  return order;
+}
+
+function getDepth(symbol: string) {
+
+  const bids: {
+    price: number;
+    qty: number;
+  }[] = [];
+
+  const asks: {
+    price: number;
+    qty: number;
+  }[] = [];
+
+  for (const order of ORDERS.values()) {
+
+    if (order.symbol !== symbol) {
+      continue;
+    }
+
+    if (order.status !== "open") {
+      continue;
+    }
+
+    if (order.side === "buy") {
+
+      bids.push({
+        price: order.price || 0,
+        qty: order.qty,
+      });
+
+    } else {
+
+      asks.push({
+        price: order.price || 0,
+        qty: order.qty,
+      });
     }
   }
 
-  // just checking the flow, remove this when you start implementing the logic
+  bids.sort((a, b) => b.price - a.price);
+
+  asks.sort((a, b) => a.price - b.price);
+
+  return {
+    symbol,
+    bids,
+    asks,
+  };
+}
+
+function handleEngineRequest(
+  message: EngineRequest
+): unknown {
+
   if (message.type === "create_order") {
 
-      const order: CreateOrderInput = message.payload as unknown as CreateOrderInput;
+    const input =
+      message.payload as unknown as CreateOrderInput;
 
-    console.log("create order");
-      console.log(order)
-      if (order.qty <= 0) {
-        throw new Error("Quantity must be positive");
-      }
+    return createOrder(input);
 
-      if (order.type === "limit") {
-        if (order.price === null || order.price <= 0) {
-          throw new Error("Limit orders require valid price");
-        }
-      }
+  } else if (message.type === "get_order") {
 
-      if (order.type === "market") {
-        order.price = null;
-      }
+    const { orderId } =
+      message.payload as {
+        orderId: string;
+      };
 
-
-      const newOrder = {
-        orderId: crypto.randomUUID(),
-
-        userId: order.userId,
-
-        type: order.type,
-        side: order.side,
-        symbol: order.symbol,
-
-        price: order.price,
-        qty: order.qty,
-
-        filledQty: 0,
-
-        status: "open",
-
-        fills:[],
-
-        createdAt: Date.now(),
-     };
-
-     ORDERS.set(newOrder.orderId, newOrder as OrderRecord);
-
-     return newOrder;
-
-    // return {
-    //   orderId: crypto.randomUUID(),
-    //   status: "filled",
-    //   filledQty: DUMMY_SELL_ORDER.qty,
-    //   averagePrice: DUMMY_SELL_ORDER.price,
-    //   fills: [
-    //     {
-    //       fillId: crypto.randomUUID(),
-    //       symbol: DUMMY_SELL_ORDER.symbol,
-    //       price: DUMMY_SELL_ORDER.price,
-    //       qty: DUMMY_SELL_ORDER.qty,
-    //       buyOrderId: "request-buy-order",
-    //       sellOrderId: DUMMY_SELL_ORDER.orderId,
-    //     },
-    //   ],
-    //   note: "Smoke-test response only. Students must replace this with real matching logic.",
-    // };
-  }
-
-  
-  // if(message.type === "get_order"){
-  //     const order = ORDERS.get(message.payload.orderId as string);
-
-  //     if(!order){
-  //       throw new Error("Order not found ");
-  //     }
-
-  //     return order;
-  // }
-
-  if (message.type === "get_order") {
-
-    const { orderId } = message.payload as {
-       orderId: string;
-    };
-
-    console.log(orderId)
- 
     const order = ORDERS.get(orderId);
- 
+
     if (!order) {
-       throw new Error("Order not found");
+      throw new Error("Order not found");
     }
- 
+
     return order;
- }
 
-  // throw new Error("TODO(student): implement this engine request type");
+  } else if (
+    message.type === "cancel_order"
+  ) {
 
+    const { orderId } =
+      message.payload as {
+        orderId: string;
+      };
+
+    return cancelOrder(orderId);
+
+  } else if (
+    message.type === "get_depth"
+  ) {
+
+    const { symbol } =
+      message.payload as {
+        symbol: string;
+      };
+
+    return getDepth(symbol);
+
+  } else {
+
+    const { userId } =
+      message.payload as {
+        userId: string;
+      };
+
+    seedBalance(userId);
+
+    return BALANCES.get(userId);
+  }
 }
 
+console.log(
+  `Engine listening on Redis queue: ${env.incomingQueue}`
+);
 
-console.log(`Engine listening on Redis queue: ${env.incomingQueue}`);
+for (;;) {
 
-for (; ;) {
-  const item = await brokerClient.brPop(env.incomingQueue, 0);
-  if (!item) continue;
+  const item = await brokerClient.brPop(
+    env.incomingQueue,
+    0
+  );
+
+  if (!item) {
+    continue;
+  }
 
   let message: EngineRequest;
 
   try {
-    message = JSON.parse(item.element) as EngineRequest;
+
+    message = JSON.parse(
+      item.element
+    ) as EngineRequest;
+
   } catch {
-    console.error("Skipping invalid broker message");
+
+    console.error(
+      "Skipping invalid broker message"
+    );
+
     continue;
   }
 
   try {
-    const data = handleEngineRequest(message);
-    await sendResponse(message.responseQueue, {
-      correlationId: message.correlationId,
-      ok: true,
-      data,
-    });
+
+    const data =
+      handleEngineRequest(message);
+
+    await sendResponse(
+      message.responseQueue,
+      {
+        correlationId:
+          message.correlationId,
+
+        ok: true,
+
+        data,
+      }
+    );
+
   } catch (error) {
-    await sendResponse(message.responseQueue, {
-      correlationId: message.correlationId,
-      ok: false,
-      error: error instanceof Error ? error.message : "engine_error",
-    });
+
+    await sendResponse(
+      message.responseQueue,
+      {
+        correlationId:
+          message.correlationId,
+
+        ok: false,
+
+        error:
+          error instanceof Error
+            ? error.message
+            : "engine_error",
+      }
+    );
   }
 }
