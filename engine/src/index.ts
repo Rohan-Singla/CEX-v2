@@ -136,54 +136,56 @@ function cancelOrder(
   return order;
 }
 
-function getDepth(symbol: string) {
+// REMOVED THE ORDER SO NO POINT OF DEPTH FOR NOW 
 
-  const bids: {
-    price: number;
-    qty: number;
-  }[] = [];
+// function getDepth(symbol: string) {
 
-  const asks: {
-    price: number;
-    qty: number;
-  }[] = [];
+//   const bids: {x
+//     price: number;
+//     qty: number;
+//   }[] = [];
 
-  for (const order of ORDERS.values()) {
+//   const asks: {
+//     price: number;
+//     qty: number;
+//   }[] = [];
 
-    if (order.symbol !== symbol) {
-      continue;
-    }
+//   for (const order of ORDERS.values()) {
 
-    if (order.status !== "open") {
-      continue;
-    }
+//     if (order.symbol !== symbol) {
+//       continue;
+//     }
 
-    if (order.side === "buy") {
+//     if (order.status !== "open") {
+//       continue;
+//     }
 
-      bids.push({
-        price: order.price || 0,
-        qty: order.qty,
-      });
+//     if (order.side === "buy") {
 
-    } else {
+//       bids.push({
+//         price: order.price || 0,
+//         qty: order.qty,
+//       });
 
-      asks.push({
-        price: order.price || 0,
-        qty: order.qty,
-      });
-    }
-  }
+//     } else {
 
-  bids.sort((a, b) => b.price - a.price);
+//       asks.push({
+//         price: order.price || 0,
+//         qty: order.qty,
+//       });
+//     }
+//   }
 
-  asks.sort((a, b) => a.price - b.price);
+//   bids.sort((a, b) => b.price - a.price);
 
-  return {
-    symbol,
-    bids,
-    asks,
-  };
-}
+//   asks.sort((a, b) => a.price - b.price);
+
+//   return {
+//     symbol,
+//     bids,
+//     asks,
+//   };
+// }
 
 function handleEngineRequest(
   message: EngineRequest
@@ -231,7 +233,9 @@ function handleEngineRequest(
         symbol: string;
       };
 
-    return getDepth(symbol);
+      return {asset : symbol}
+
+    // return getDepth(symbol);
 
   } else {
 
